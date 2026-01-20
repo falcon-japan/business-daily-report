@@ -355,10 +355,6 @@ input:focus, textarea:focus{
 </head>
 
 <body>
-<script>
-  /* ✅ GAS配信版：doGet から ?user を注入（CloudflareではなくGASで動かす） */
-  const defaultUser = "<?= (user || '').toString().replace(/"/g,'&quot;') ?>"; // 基本は ?user=xxx 運用
-</script>
 
 <div class="header">
   <h1>業務日報</h1>
@@ -406,7 +402,7 @@ input:focus, textarea:focus{
     <div id="chart-msg" class="tip" style="text-align:center;margin-top:8px;"></div>
   </div>
 
-  <!-- ✅ 履歴（追加：業務報告も表示） -->
+  <!-- ✅ 履歴 -->
   <div id="history" class="dashboard" style="display:none;">
     <h3>日報履歴（最新20件）</h3>
     <div id="history-body" class="tip">読み込み中…</div>
@@ -452,30 +448,108 @@ input:focus, textarea:focus{
 <div class="footer">Falcon Digital System © 2025</div>
 
 <script>
-/* ===========================
-   ✅ GAS呼び出しユーティリティ（google.script.run）
-   - Cloudflare静的からの fetch ではなく、GAS配信で確実に動かす
-=========================== */
-function gasCall_(fnName, args){
-  return new Promise((resolve, reject)=>{
-    try{
-      if(!google || !google.script || !google.script.run){
-        reject(new Error("google.script.run が使えません（GAS配信で開いてください）"));
-        return;
-      }
-      const runner = google.script.run
-        .withSuccessHandler(res => resolve(res))
-        .withFailureHandler(err => {
-          // errはオブジェクトだったり文字列だったりするので吸収
-          const msg = (err && (err.message || err.toString())) ? (err.message || err.toString()) : String(err);
-          reject(new Error(msg));
-        });
+/* ===========================================================
+   ✅ ここだけ設定：GAS WebアプリURL（/exec）
+   例）https://script.google.com/macros/s/xxxxxxxxxxxxxxxx/exec
+=========================================================== */
+const API_BASE = "<<<ここをあなたのGAS WebアプリURL（/exec）に差し替え>>>";
 
-      // 可変引数で呼ぶ
-      runner[fnName].apply(runner, args || []);
-    }catch(e){
-      reject(e);
+/* ===========================
+   ✅ JSONP（GET）ユーティリティ
+=========================== */
+function jsonp_(params){
+  return new Promise((resolve, reject)=>{
+    const cb = "__cb_" + Math.random().toString(16).slice(2);
+    const url = new URL(API_BASE);
+    Object.entries(params || {}).forEach(([k,v])=> url.searchParams.set(k, v));
+    url.searchParams.set("callback", cb);
+
+    const script = document.createElement("script");
+    script.async = true;
+    script.src = url.toString();
+
+    const timer = setTimeout(()=>{
+      cleanup();
+      reject(new Error("timeout"));
+    }, 12000);
+
+    function cleanup(){
+      clearTimeout(timer);
+      script.remove();
+      try{ delete window[cb]; }catch(e){ window[cb]=undefined; }
     }
+
+    window[cb] = (res)=>{
+      cleanup();
+      resolve(res);
+    };
+
+    script.onerror = ()=>{
+      cleanup();
+      reject(new Error("jsonp_error"));
+    };
+
+    document.head.appendChild(script);
+  });
+}
+
+/* ===========================
+   ✅ iframe（POST）ユーティリティ
+   - CORS不要で確実に送れる
+=========================== */
+let __postIframe;
+let __postResolve;
+let __postReject;
+
+function postViaIframe_(payloadObj){
+  return new Promise((resolve, reject)=>{
+    __postResolve = resolve;
+    __postReject = reject;
+
+    if(!__postIframe){
+      __postIframe = document.createElement("iframe");
+      __postIframe.name = "__falcon_post_iframe";
+      __postIframe.style.display = "none";
+      document.body.appendChild(__postIframe);
+
+      window.addEventListener("message", (ev)=>{
+        const d = ev && ev.data;
+        if(!d || !d.__falconDailyReport) return;
+        const result = d.result || {};
+        if(result.ok){
+          __postResolve && __postResolve(result);
+        }else{
+          __postReject && __postReject(new Error(result.error || "post_failed"));
+        }
+      });
+    }
+
+    const form = document.createElement("form");
+    form.method = "POST";
+    form.action = API_BASE;
+    form.target = "__falcon_post_iframe";
+
+    const input = document.createElement("input");
+    input.type = "hidden";
+    input.name = "payload";
+    input.value = JSON.stringify(payloadObj);
+
+    form.appendChild(input);
+    document.body.appendChild(form);
+
+    const timer = setTimeout(()=>{
+      form.remove();
+      reject(new Error("post_timeout"));
+    }, 12000);
+
+    // 成功/失敗は postMessage で返る。念のためタイマー解除は受信側でやるのが理想だが、
+    // 今回は「受信したらresolve/reject」＋タイムアウトで十分安定する。
+    const oldResolve = __postResolve;
+    const oldReject = __postReject;
+    __postResolve = (r)=>{ clearTimeout(timer); form.remove(); oldResolve(r); };
+    __postReject  = (e)=>{ clearTimeout(timer); form.remove(); oldReject(e); };
+
+    form.submit();
   });
 }
 
@@ -495,12 +569,13 @@ function setToday(){
 
 function loadUserFromURL(){
   const params=new URLSearchParams(window.location.search);
-  let user=params.get("user") || defaultUser;
   const input=document.getElementById("username");
 
+  let user=params.get("user");
   if(user){
-    input.value=decodeURIComponent(user);
-    localStorage.setItem("username", input.value);
+    user = decodeURIComponent(user);
+    input.value = user;
+    localStorage.setItem("username", user);
   }else{
     const saved=localStorage.getItem("username");
     if(saved) input.value=saved;
@@ -597,7 +672,7 @@ function showAPCelebration_(){
 
   layer.classList.add("show");
 
-  const count = 42; // 安定・軽量ライン
+  const count = 42;
   const vw = Math.max(document.documentElement.clientWidth, window.innerWidth || 0);
 
   for(let i=0;i<count;i++){
@@ -632,7 +707,7 @@ function showAPCelebration_(){
 }
 
 /* ===========================
-   送信（GAS）※確実に動く
+   送信（POST iframe）
 =========================== */
 async function startSend(){
   const aiDiv=document.getElementById("ai-analyze");
@@ -640,18 +715,21 @@ async function startSend(){
   aiDiv.scrollIntoView({behavior:"smooth",block:"center"});
 
   const payload={
-    name:username.value,
-    call:call.value,
-    out:out.value,
-    ap:ap.value,
-    miko:miko.value,
-    kad:kad.value,
-    sonota:sonota.value,
-    report:report.value
+    name: username.value,
+    call: call.value,
+    out: out.value,
+    ap: ap.value,
+    miko: miko.value,
+    kad: kad.value,
+    sonota: sonota.value,
+    report: report.value
   };
 
   try{
-    await gasCall_("appendDailyReport", [payload]);
+    await postViaIframe_({
+      action: "appendDailyReport",
+      data: payload
+    });
 
     aiDiv.innerHTML = (Number(payload.ap)>=1)
       ? "<p>🎉 AP取得おめでとうございます！本日もお疲れさまでした。</p>"
@@ -679,14 +757,12 @@ function resetInputs(showAlert=true){
 }
 
 /* ===========================
-   ✅ ダッシュボード（確実表示）
-   - Charts準備完了を待ってから draw
+   ✅ ダッシュボード（GET JSONP）
    ✅ 円グラフは「AP数 / 成約数」
    ✅ workDays undefined を絶対に起こさない防御
 =========================== */
-function normalizeSummary_(data){
-  // サーバ側が何かあってもUIが落ちないように必ず形を作る
-  const d = data || {};
+function normalizeSummary_(res){
+  const d = (res && res.data) ? res.data : (res || {});
   return {
     workDays: Number(d.workDays || 0),
     callSum: Number(d.callSum || 0),
@@ -708,8 +784,10 @@ async function loadDashboard_(){
   msg.textContent = "グラフ準備中…";
 
   try{
-    const raw = await gasCall_("getMonthlySummary", [name]);
-    const data = normalizeSummary_(raw);
+    const res = await jsonp_({ action:"monthlySummary", name });
+    if(!res || !res.ok) throw new Error(res && res.error ? res.error : "api_error");
+
+    const data = normalizeSummary_(res);
 
     document.getElementById("dash-body").innerHTML=`
       <tr>
@@ -761,7 +839,7 @@ function toggleDashboard(){
 }
 
 /* ===========================
-   ✅ 履歴（最新20件）
+   ✅ 履歴（GET JSONP）
 =========================== */
 function toggleHistory(){
   const box = document.getElementById("history");
@@ -787,9 +865,12 @@ async function loadHistory_(){
   body.innerHTML = "読み込み中…";
 
   try{
-    const list = await gasCall_("getMyReportHistory", [name, 20]);
+    const res = await jsonp_({ action:"history", name, limit:"20" });
+    if(!res || !res.ok) throw new Error(res && res.error ? res.error : "api_error");
 
-    if(!list || !list.length){
+    const list = res.data || [];
+
+    if(!list.length){
       body.innerHTML = "<div class='tip'>履歴がありません</div>";
       return;
     }
