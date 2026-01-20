@@ -356,9 +356,8 @@ input:focus, textarea:focus{
 
 <body>
 <script>
-  /* ✅ Cloudflare Pages版：GASテンプレ変数は使わない */
-  const defaultUser = ""; // 基本は ?user=xxx 運用
-  const API_BASE = "/api"; // Pages Functions の /api を叩く
+  /* ✅ GAS配信版：doGet から ?user を注入（CloudflareではなくGASで動かす） */
+  const defaultUser = "<?= (user || '').toString().replace(/"/g,'&quot;') ?>"; // 基本は ?user=xxx 運用
 </script>
 
 <div class="header">
@@ -454,30 +453,30 @@ input:focus, textarea:focus{
 
 <script>
 /* ===========================
-   APIユーティリティ（Cloudflare Pages Functions）
+   ✅ GAS呼び出しユーティリティ（google.script.run）
+   - Cloudflare静的からの fetch ではなく、GAS配信で確実に動かす
 =========================== */
-async function apiGet_(path, params={}){
-  const u = new URL(API_BASE + path, window.location.origin);
-  Object.entries(params).forEach(([k,v])=>u.searchParams.set(k, String(v ?? "")));
-  const res = await fetch(u.toString(), { method:"GET", cache:"no-store" });
-  const json = await res.json().catch(()=> ({}));
-  if(!res.ok || !json || json.ok === false){
-    throw new Error(json?.message || `API Error (${res.status})`);
-  }
-  return json.data;
-}
+function gasCall_(fnName, args){
+  return new Promise((resolve, reject)=>{
+    try{
+      if(!google || !google.script || !google.script.run){
+        reject(new Error("google.script.run が使えません（GAS配信で開いてください）"));
+        return;
+      }
+      const runner = google.script.run
+        .withSuccessHandler(res => resolve(res))
+        .withFailureHandler(err => {
+          // errはオブジェクトだったり文字列だったりするので吸収
+          const msg = (err && (err.message || err.toString())) ? (err.message || err.toString()) : String(err);
+          reject(new Error(msg));
+        });
 
-async function apiPost_(path, bodyObj){
-  const res = await fetch(API_BASE + path, {
-    method:"POST",
-    headers:{ "Content-Type":"application/json" },
-    body: JSON.stringify(bodyObj || {})
+      // 可変引数で呼ぶ
+      runner[fnName].apply(runner, args || []);
+    }catch(e){
+      reject(e);
+    }
   });
-  const json = await res.json().catch(()=> ({}));
-  if(!res.ok || !json || json.ok === false){
-    throw new Error(json?.message || `API Error (${res.status})`);
-  }
-  return json.data;
 }
 
 /* ===========================
@@ -496,7 +495,7 @@ function setToday(){
 
 function loadUserFromURL(){
   const params=new URLSearchParams(window.location.search);
-  let user=params.get("user")||defaultUser;
+  let user=params.get("user") || defaultUser;
   const input=document.getElementById("username");
 
   if(user){
@@ -620,7 +619,6 @@ function showAPCelebration_(){
     el.style.width = w + "px";
     el.style.height = h + "px";
 
-    // 4.2秒表示に合わせて落下も自然に
     el.style.animationDuration = (2.6 + Math.random()*1.2) + "s";
 
     layer.appendChild(el);
@@ -634,7 +632,7 @@ function showAPCelebration_(){
 }
 
 /* ===========================
-   送信（Cloudflare API）
+   送信（GAS）※確実に動く
 =========================== */
 async function startSend(){
   const aiDiv=document.getElementById("ai-analyze");
@@ -653,7 +651,7 @@ async function startSend(){
   };
 
   try{
-    await apiPost_("/append", payload);
+    await gasCall_("appendDailyReport", [payload]);
 
     aiDiv.innerHTML = (Number(payload.ap)>=1)
       ? "<p>🎉 AP取得おめでとうございます！本日もお疲れさまでした。</p>"
@@ -661,11 +659,10 @@ async function startSend(){
 
     if(Number(payload.ap) >= 1) showAPCelebration_();
 
-    // 累計が開いていれば更新
+    // ✅ 送信後に、累計/履歴を開いている場合は自動再読み込み
     if(document.getElementById("dashboard").style.display !== "none"){
       loadDashboard_();
     }
-    // 履歴が開いていれば更新
     if(document.getElementById("history").style.display !== "none"){
       loadHistory_();
     }
@@ -685,7 +682,24 @@ function resetInputs(showAlert=true){
    ✅ ダッシュボード（確実表示）
    - Charts準備完了を待ってから draw
    ✅ 円グラフは「AP数 / 成約数」
+   ✅ workDays undefined を絶対に起こさない防御
 =========================== */
+function normalizeSummary_(data){
+  // サーバ側が何かあってもUIが落ちないように必ず形を作る
+  const d = data || {};
+  return {
+    workDays: Number(d.workDays || 0),
+    callSum: Number(d.callSum || 0),
+    outSum: Number(d.outSum || 0),
+    apSum: Number(d.apSum || 0),
+    mikoSum: Number(d.mikoSum || 0),
+    kadSum: Number(d.kadSum || 0),
+    sonotaSum: Number(d.sonotaSum || 0),
+    totalR: Number(d.totalR || 0),
+    dealCount: Number(d.dealCount || 0),
+  };
+}
+
 async function loadDashboard_(){
   const name=document.getElementById("username").value;
   if(!name) return;
@@ -694,7 +708,8 @@ async function loadDashboard_(){
   msg.textContent = "グラフ準備中…";
 
   try{
-    const data = await apiGet_("/summary", { user: name });
+    const raw = await gasCall_("getMonthlySummary", [name]);
+    const data = normalizeSummary_(raw);
 
     document.getElementById("dash-body").innerHTML=`
       <tr>
@@ -772,7 +787,7 @@ async function loadHistory_(){
   body.innerHTML = "読み込み中…";
 
   try{
-    const list = await apiGet_("/history", { user: name, limit: 20 });
+    const list = await gasCall_("getMyReportHistory", [name, 20]);
 
     if(!list || !list.length){
       body.innerHTML = "<div class='tip'>履歴がありません</div>";
@@ -786,8 +801,8 @@ async function loadHistory_(){
         <div class="history-card">
           <div class="date">${date}</div>
           <div class="nums">
-            コール:${r.call} / アウト:${r.out} / AP:${r.ap} / 見込み:${r.miko}<br>
-            架電R:${r.kad} / その他R:${r.sonota}
+            コール:${Number(r.call||0)} / アウト:${Number(r.out||0)} / AP:${Number(r.ap||0)} / 見込み:${Number(r.miko||0)}<br>
+            架電R:${Number(r.kad||0)} / その他R:${Number(r.sonota||0)}
           </div>
           <div class="report">${report || ""}</div>
         </div>
