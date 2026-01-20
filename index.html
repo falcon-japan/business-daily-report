@@ -356,12 +356,17 @@ input:focus, textarea:focus{
 
 <body>
 <script>
-  /* ===========================
-     ✅ Cloudflare Pages版：GAS JSON API（CORS対応）
-     - google.script.run は使わない
-     - ここが Invalid URL の根本原因なので exec を固定
-  =========================== */
+  /* ===========================================================
+     ✅ Cloudflare Pages 完全対応（静的で確実に動く通信）
+     - GET: JSONP（summary/history）
+     - POST: フォーム送信（append）※CORS不要で確実
+  =========================================================== */
+
+  // ✅ あなたのGAS /exec
   const API_BASE = "https://script.google.com/macros/s/AKfycbwR7ACRA-QVhTsBIuOP7mZ7SssPSSOvqS_85pybuugAUAjARxLgoiC7XqayR5b-JThR4g/exec";
+
+  // ✅ 静的なので defaultUser は空（?user=xxx を読む）
+  const defaultUser = "";
 </script>
 
 <div class="header">
@@ -443,6 +448,9 @@ input:focus, textarea:focus{
   </div>
 </div>
 
+<!-- ✅ 送信用：CORS不要のフォームPOST（見えない） -->
+<iframe id="hidden_iframe" name="hidden_iframe" style="display:none;"></iframe>
+
 <div class="tool-section">
   <h2>🔧 業務支援ツール</h2>
   <div class="tool-buttons">
@@ -457,49 +465,103 @@ input:focus, textarea:focus{
 
 <script>
 /* ===========================
-   ✅ APIユーティリティ（CORS対応 / form POST）
-   - GET : ?action=summary / ?action=history
-   - POST: action=append
+   ✅ 通信（JSONP / フォームPOST）
 =========================== */
-function assertApiBase_(){
-  if(!API_BASE || typeof API_BASE !== "string" || !API_BASE.startsWith("https://")){
-    throw new Error("API_BASEが不正です（Invalid URL）");
-  }
-}
+function jsonpCall_(action, params){
+  return new Promise((resolve, reject)=>{
+    try{
+      const cb = "__cb_" + Date.now() + "_" + Math.floor(Math.random()*1e6);
+      const url = new URL(API_BASE);
+      url.searchParams.set("action", action);
+      url.searchParams.set("callback", cb);
+      if(params){
+        Object.entries(params).forEach(([k,v])=>{
+          url.searchParams.set(k, v == null ? "" : String(v));
+        });
+      }
 
-async function apiGet_(action, paramsObj){
-  assertApiBase_();
-  const u = new URL(API_BASE);
-  u.searchParams.set("action", action);
-  const p = paramsObj || {};
-  Object.keys(p).forEach(k => u.searchParams.set(k, String(p[k] ?? "")));
+      const s = document.createElement("script");
+      const timer = setTimeout(()=>{
+        cleanup();
+        reject(new Error("timeout"));
+      }, 15000);
 
-  const res = await fetch(u.toString(), { method:"GET", mode:"cors", cache:"no-store" });
-  if(!res.ok) throw new Error(`API GET失敗: ${res.status}`);
-  const data = await res.json();
-  if(data && data.ok === false) throw new Error(data.message || "API error");
-  return data;
-}
+      function cleanup(){
+        clearTimeout(timer);
+        try{ delete window[cb]; }catch(_){}
+        if(s && s.parentNode) s.parentNode.removeChild(s);
+      }
 
-async function apiPost_(action, paramsObj){
-  assertApiBase_();
-  const body = new URLSearchParams();
-  body.set("action", action);
-  const p = paramsObj || {};
-  Object.keys(p).forEach(k => body.set(k, String(p[k] ?? "")));
+      window[cb] = (payload)=>{
+        cleanup();
+        if(payload && payload.ok){
+          resolve(payload.data);
+        }else{
+          reject(new Error((payload && payload.message) ? payload.message : "API error"));
+        }
+      };
 
-  // ✅ form POSTにすることでCORSプリフライトを回避しやすい（安定）
-  const res = await fetch(API_BASE, {
-    method:"POST",
-    mode:"cors",
-    headers:{ "Content-Type":"application/x-www-form-urlencoded;charset=UTF-8" },
-    body: body.toString()
+      s.src = url.toString();
+      s.onerror = ()=>{
+        cleanup();
+        reject(new Error("jsonp failed"));
+      };
+      document.head.appendChild(s);
+
+    }catch(e){
+      reject(e);
+    }
   });
+}
 
-  if(!res.ok) throw new Error(`API POST失敗: ${res.status}`);
-  const data = await res.json();
-  if(data && data.ok === false) throw new Error(data.message || "API error");
-  return data;
+function postForm_(fields){
+  return new Promise((resolve, reject)=>{
+    try{
+      const iframe = document.getElementById("hidden_iframe");
+      if(!iframe) throw new Error("hidden_iframe not found");
+
+      const form = document.createElement("form");
+      form.method = "POST";
+      form.action = API_BASE;
+      form.target = "hidden_iframe";
+
+      Object.entries(fields).forEach(([k,v])=>{
+        const inp = document.createElement("input");
+        inp.type = "hidden";
+        inp.name = k;
+        inp.value = (v == null ? "" : String(v));
+        form.appendChild(inp);
+      });
+
+      let done = false;
+      const timer = setTimeout(()=>{
+        if(done) return;
+        done = true;
+        cleanup();
+        reject(new Error("timeout"));
+      }, 15000);
+
+      const onload = ()=>{
+        if(done) return;
+        done = true;
+        cleanup();
+        resolve(true);
+      };
+
+      function cleanup(){
+        clearTimeout(timer);
+        iframe.removeEventListener("load", onload);
+        if(form && form.parentNode) form.parentNode.removeChild(form);
+      }
+
+      iframe.addEventListener("load", onload);
+      document.body.appendChild(form);
+      form.submit();
+
+    }catch(e){
+      reject(e);
+    }
+  });
 }
 
 /* ===========================
@@ -518,7 +580,7 @@ function setToday(){
 
 function loadUserFromURL(){
   const params=new URLSearchParams(window.location.search);
-  let user=params.get("user");
+  let user=params.get("user") || defaultUser;
   const input=document.getElementById("username");
 
   if(user){
@@ -655,7 +717,7 @@ function showAPCelebration_(){
 }
 
 /* ===========================
-   送信（API）※確実に動く
+   送信（フォームPOSTで確実）
 =========================== */
 async function startSend(){
   const aiDiv=document.getElementById("ai-analyze");
@@ -674,7 +736,18 @@ async function startSend(){
   };
 
   try{
-    await apiPost_("append", payload);
+    // ✅ CORS不要：フォームPOSTで送る（GAS doPost）
+    await postForm_({
+      action:"append",
+      name: payload.name,
+      call: payload.call,
+      out: payload.out,
+      ap: payload.ap,
+      miko: payload.miko,
+      kad: payload.kad,
+      sonota: payload.sonota,
+      report: payload.report
+    });
 
     aiDiv.innerHTML = (Number(payload.ap)>=1)
       ? "<p>🎉 AP取得おめでとうございます！本日もお疲れさまでした。</p>"
@@ -682,7 +755,7 @@ async function startSend(){
 
     if(Number(payload.ap) >= 1) showAPCelebration_();
 
-    // ✅ 送信後に、累計/履歴を開いている場合は自動再読み込み
+    // ✅ 送信後に、累計/履歴を開いている場合は自動で再読み込み
     if(document.getElementById("dashboard").style.display !== "none"){
       loadDashboard_();
     }
@@ -730,7 +803,7 @@ async function loadDashboard_(){
   msg.textContent = "グラフ準備中…";
 
   try{
-    const raw = await apiGet_("summary", { name });
+    const raw = await jsonpCall_("summary", { name });
     const data = normalizeSummary_(raw);
 
     document.getElementById("dash-body").innerHTML=`
@@ -809,7 +882,7 @@ async function loadHistory_(){
   body.innerHTML = "読み込み中…";
 
   try{
-    const list = await apiGet_("history", { name, limit: 20 });
+    const list = await jsonpCall_("history", { name, limit: 20 });
 
     if(!list || !list.length){
       body.innerHTML = "<div class='tip'>履歴がありません</div>";
