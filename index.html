@@ -1,0 +1,785 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>業務日報</title>
+<script src="https://www.gstatic.com/charts/loader.js"></script>
+
+<script>
+  // ✅ Chartsは1回だけロードして「準備完了」をPromiseで待てるようにする
+  let __chartsReadyResolve;
+  const __chartsReady = new Promise(res => __chartsReadyResolve = res);
+
+  google.charts.load('current', { packages:['corechart'] });
+  google.charts.setOnLoadCallback(() => __chartsReadyResolve(true));
+</script>
+
+<style>
+/* ===========================
+   ✅ スマホ視認性UP（出勤表寄せ）
+=========================== */
+
+html{
+  font-size: 17px;
+  -webkit-text-size-adjust: 100%;
+}
+
+@media (min-width: 768px){
+  html{ font-size: 18px; }
+}
+
+:root{
+  --bg:#f2f9fb;
+  --card:#ffffff;
+  --text:#333;
+  --muted:#666;
+
+  --accent1:#0078A6;
+  --accent2:#00A2B8;
+}
+
+*{ box-sizing:border-box; }
+
+body{
+  font-family: "Noto Sans JP", system-ui, -apple-system, sans-serif;
+  background: var(--bg);
+  margin: 0;
+  color: var(--text);
+  padding-top: 112px; /* ヘッダー固定分 */
+  line-height: 1.7;
+}
+
+/* === 固定ヘッダー === */
+.header{
+  position: fixed;
+  top: 0; left: 0; width: 100%;
+  background: linear-gradient(135deg,var(--accent1),var(--accent2));
+  color: #fff;
+  text-align: center;
+  padding: 14px 10px 10px;
+  border-bottom-left-radius: 24px;
+  border-bottom-right-radius: 24px;
+  box-shadow: 0 4px 10px rgba(0,0,0,.15);
+  z-index: 9999;
+}
+.header h1{
+  margin: 0;
+  font-size: 1.35rem;
+  font-weight: 900;
+  letter-spacing: .02em;
+}
+
+#today-date,
+#now-info{
+  font-size: .98rem;
+  font-weight: 800;
+  background: rgba(255,255,255,.16);
+  border-radius: 999px;
+  padding: 5px 11px;
+  display: inline-block;
+  margin-top: 6px;
+}
+
+/* === コンテナ === */
+.container{
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
+  background: var(--card);
+  border-radius: 18px;
+  box-shadow: 0 3px 15px rgba(0,0,0,.08);
+  padding: 20px 16px 28px;
+}
+
+@media (max-width: 420px){
+  .container{ padding: 18px 14px 26px; }
+}
+
+h2{
+  font-size: 1.15rem;
+  color: var(--accent1);
+  border-left: 6px solid var(--accent2);
+  padding-left: 10px;
+  margin: 16px 0 10px;
+  font-weight: 900;
+  letter-spacing: .01em;
+}
+
+label{
+  display:block;
+  margin: 14px 0 6px;
+  font-weight: 900;
+  font-size: 1.02rem;
+  color:#0f172a;
+}
+
+input[type="number"],
+input[type="text"],
+textarea{
+  width:100%;
+  border:2px solid #d6e3ea;
+  border-radius:14px;
+  padding:16px 14px;
+  font-size:1.12rem;
+  font-weight:700;
+  box-sizing:border-box;
+  background:#fff;
+}
+
+textarea{
+  min-height: 110px;
+  font-weight: 600;
+}
+
+input:focus, textarea:focus{
+  border-color: var(--accent2);
+  outline:none;
+  box-shadow: 0 0 0 3px rgba(0,162,184,.16);
+}
+
+::placeholder{ opacity:.60; }
+
+.tip{
+  font-size:.90rem;
+  color: var(--muted);
+  margin-top: 6px;
+}
+
+/* === ボタン群 === */
+.button-group{
+  margin-top: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.btn{
+  border:none;
+  width:100%;
+  font-size:1.10rem;
+  border-radius:16px;
+  padding:16px 0;
+  color:#fff;
+  font-weight:900;
+  box-shadow:0 2px 7px rgba(0,0,0,0.14);
+  cursor:pointer;
+}
+
+.btn-send{
+  background:linear-gradient(135deg,var(--accent1),var(--accent2));
+  padding:18px 0;
+  font-size:1.14rem;
+}
+
+.btn-dashboard{ background:linear-gradient(135deg,#F39C12,#F5B041); }
+.btn-reset{ background:#e5e7eb; color:#111827; box-shadow:none; }
+
+/* === 累計 / 履歴 共通枠 === */
+.dashboard{
+  margin-top:22px;
+  background:#f9fdfd;
+  border:2px solid #d7eef0;
+  border-radius:16px;
+  padding:14px;
+  overflow-x:auto;
+}
+.dashboard table{
+  width:100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+.dashboard th, .dashboard td{
+  border:1px solid #d6dee5;
+  padding:10px 8px;
+  text-align:center;
+  font-size:.95rem;
+  font-weight:700;
+  white-space:nowrap;
+}
+.dashboard th{ background:#eaf6f9; font-weight:900; }
+.dashboard h3{ margin:6px 0 12px; font-size:1.08rem; font-weight:900; color:#0f172a; }
+
+/* ✅ 円グラフ */
+#pie-chart{
+  width: 100%;
+  height: 320px;
+  margin-top: 18px;
+  border-radius: 16px;
+  background: #fff;
+}
+
+/* === 日報履歴カード（追加） === */
+.history-card{
+  background:#fff;
+  border:1.5px solid #dbecef;
+  border-radius:14px;
+  padding:14px;
+  margin-bottom:12px;
+  box-shadow:0 2px 8px rgba(0,0,0,.05);
+}
+.history-card .date{
+  font-weight:900;
+  color:var(--accent1);
+  margin-bottom:6px;
+  font-size:1.02rem;
+}
+.history-card .nums{
+  font-size:.95rem;
+  font-weight:800;
+  color:#0f172a;
+  margin-bottom:8px;
+}
+.history-card .report{
+  font-size:.95rem;
+  background:#f5fbfc;
+  border-radius:12px;
+  padding:10px 12px;
+  white-space:pre-wrap;
+  color:#111827;
+}
+
+/* === 業務支援ツール === */
+.tool-section{
+  width:100%;
+  max-width:720px;
+  margin:22px auto 34px;
+  background:#f8fcfd;
+  border:2px solid #d0e6ec;
+  border-radius:18px;
+  padding:18px 14px;
+  text-align:center;
+  box-shadow:0 3px 10px rgba(0,0,0,0.05);
+}
+.tool-section h2{ color:var(--accent1); font-size:1.08rem; margin-top:6px; }
+
+.tool-buttons{
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  justify-items: stretch;
+  margin-top: 10px;
+}
+.tool-buttons button{
+  background:linear-gradient(135deg,var(--accent1),var(--accent2));
+  color:#fff;
+  border:none;
+  border-radius:14px;
+  padding:12px 10px;
+  font-size:0.98rem;
+  font-weight:800;
+  cursor:pointer;
+  transition:transform 0.12s ease;
+  width:100%;
+  min-width:0;
+}
+.tool-buttons button:hover{ transform:translateY(-1px); }
+
+@media (max-width: 350px){
+  .tool-buttons{ grid-template-columns: 1fr; }
+}
+
+.footer{
+  text-align:center;
+  font-size:.90rem;
+  color:#777;
+  margin:24px 0 40px;
+}
+
+.loader{
+  width:32px; height:32px;
+  margin:0 auto 10px;
+  border:3px solid #ccc;
+  border-top-color: var(--accent2);
+  border-radius:50%;
+  animation:spin 1s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ===========================
+   🎉 AP演出：花火（紙吹雪）
+   - 4.2秒表示
+=========================== */
+#ap-celebration{
+  position: fixed;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 20000;
+  pointer-events: none;
+}
+#ap-celebration.show{ display:flex; }
+
+.ap-card{
+  background: rgba(255,255,255,.92);
+  border: 2px solid rgba(0,162,184,.35);
+  border-radius: 18px;
+  padding: 18px 18px 14px;
+  text-align: center;
+  box-shadow: 0 14px 40px rgba(0,0,0,.18);
+  transform: scale(.96);
+  animation: apPop .35s ease-out forwards;
+  max-width: 320px;
+  margin: 0 14px;
+}
+.ap-card h3{
+  margin: 0 0 6px;
+  font-size: 1.15rem;
+  font-weight: 900;
+  color: var(--accent1);
+}
+.ap-card p{
+  margin: 0;
+  font-size: .98rem;
+  font-weight: 800;
+  color: #0f172a;
+}
+@keyframes apPop{ to { transform: scale(1); } }
+
+.confetti{
+  position: absolute;
+  top: -12px;
+  width: 10px;
+  height: 14px;
+  border-radius: 3px;
+  opacity: .95;
+  animation: fall 1.9s linear forwards;
+  will-change: transform;
+}
+@keyframes fall{
+  0%   { transform: translate3d(var(--x), -20px, 0) rotate(0deg); }
+  100% { transform: translate3d(calc(var(--x) + var(--dx)), 110vh, 0) rotate(720deg); opacity: .95; }
+}
+</style>
+</head>
+
+<body>
+<script>const defaultUser = "<?!= user ?>";</script>
+
+<div class="header">
+  <h1>業務日報</h1>
+  <div id="today-date">読み込み中...</div>
+  <div id="now-info">--:--　--R</div>
+</div>
+
+<div class="container">
+  <h2>👤 名前</h2>
+  <input id="username" type="text" placeholder="例：〇〇" readonly>
+  <div class="tip">※ 専用URL（?user=xxx）</div>
+
+  <h2>📅 本日の実績入力</h2>
+  <label>コール件数</label><input id="call" type="number" placeholder="例：350">
+  <label>アウト件数</label><input id="out" type="number" placeholder="例：40">
+  <label>AP件数（成果）</label><input id="ap" type="number" placeholder="例：3">
+  <label>見込み／パンフ件数</label><input id="miko" type="number" placeholder="例：1">
+  <label>架電R</label><input id="kad" type="number" placeholder="例：5">
+  <label>その他R</label><input id="sonota" type="number" placeholder="例：1">
+  <label>業務報告</label><textarea id="report" placeholder="例：〇R～〇Rまで〇〇市架電。〇R掃除。"></textarea>
+
+  <div class="button-group">
+    <button class="btn btn-dashboard" onclick="toggleDashboard()">📊 累計を見る</button>
+    <button class="btn btn-dashboard" onclick="toggleHistory()">📖 履歴を見る</button>
+    <button class="btn btn-send" onclick="validateAndConfirm()">📤 日報を送信</button>
+    <button class="btn btn-reset" onclick="openConfirm('リセット')">🧹 リセット</button>
+  </div>
+
+  <!-- ✅ 累計 -->
+  <div id="dashboard" class="dashboard" style="display:none;">
+    <h3>累計実績（月間）</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>出勤日数</th><th>コール</th><th>アウト</th><th>AP</th>
+          <th>見込み</th><th>架電R</th><th>その他R</th><th>合計R</th><th>成約</th>
+        </tr>
+      </thead>
+      <tbody id="dash-body">
+        <tr><td>0</td><td>0</td><td>0</td><td>0</td><td>0</td><td>0</td><td>0</td><td>0</td><td>0</td></tr>
+      </tbody>
+    </table>
+
+    <div id="pie-chart"></div>
+    <div id="chart-msg" class="tip" style="text-align:center;margin-top:8px;"></div>
+  </div>
+
+  <!-- ✅ 履歴（追加：業務報告も表示） -->
+  <div id="history" class="dashboard" style="display:none;">
+    <h3>日報履歴（最新20件）</h3>
+    <div id="history-body" class="tip">読み込み中…</div>
+  </div>
+
+  <div id="ai-analyze" style="display:none;text-align:center;margin-top:30px;">
+    <div class="loader"></div>
+    <p>送信中...</p>
+  </div>
+</div>
+
+<!-- === モーダル === -->
+<div id="modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;
+  background:rgba(0,0,0,0.4);align-items:center;justify-content:center;z-index:10000;">
+  <div style="max-width:340px;background:#fff;padding:26px 30px;border-radius:16px;text-align:center;">
+    <h3 id="modal-title">確認</h3>
+    <p id="modal-message"></p>
+    <div style="margin-top:20px;display:flex;justify-content:space-around;">
+      <button onclick="closeModal()" style="padding:10px 24px;border:none;border-radius:8px;background:#ccc;color:#fff;">キャンセル</button>
+      <button onclick="confirmAction()" style="padding:10px 24px;border:none;border-radius:8px;background:#0078A6;color:#fff;">OK</button>
+    </div>
+  </div>
+</div>
+
+<!-- ✅ AP演出レイヤー（4.2秒） -->
+<div id="ap-celebration" aria-hidden="true">
+  <div class="ap-card">
+    <h3>🎉 AP取得おめでとう！</h3>
+    <p>流石。次回もファイト！</p>
+  </div>
+</div>
+
+<div class="tool-section">
+  <h2>🔧 業務支援ツール</h2>
+  <div class="tool-buttons">
+    <button onclick="window.open('https://www.google.com/maps','_blank')">🗺️ Googleマップ</button>
+    <button onclick="window.open('https://www.post.japanpost.jp/zipcode/','_blank')">🏣 日本郵便</button>
+    <button onclick="window.open('https://memorva.jp/zipcode/','_blank')">📖 住所・地名読み方</button>
+    <button onclick="window.open('https://script.google.com/macros/s/AKfycbyZmcNHMnn1FCBJOF1sx0JhjcANqFkqeSvCq-q31QYxj5v8UYWPv3MhFI1v6-JMaVWooA/exec','_blank')">📋 出勤表</button>
+  </div>
+</div>
+
+<div class="footer">Falcon Digital System © 2025</div>
+
+<script>
+/* ===========================
+   日付・ユーザー
+=========================== */
+let currentAction="", todayKey="";
+
+function setToday(){
+  const el=document.getElementById('today-date');
+  const now=new Date();
+  const wk=["日","月","火","水","木","金","土"];
+  el.textContent=`${now.getFullYear()}年${now.getMonth()+1}月${now.getDate()}日（${wk[now.getDay()]}）`;
+  todayKey=`${now.getFullYear()}${now.getMonth()+1}${now.getDate()}`;
+  autoResetIfNewDay();
+}
+
+function loadUserFromURL(){
+  const params=new URLSearchParams(window.location.search);
+  let user=params.get("user")||defaultUser;
+  const input=document.getElementById("username");
+
+  if(user){
+    input.value=decodeURIComponent(user);
+    localStorage.setItem("username", input.value);
+  }else{
+    const saved=localStorage.getItem("username");
+    if(saved) input.value=saved;
+  }
+}
+
+function autoResetIfNewDay(){
+  const lastSaved=localStorage.getItem("lastDate");
+  if(lastSaved!==todayKey){
+    resetInputs(false);
+    localStorage.setItem("lastDate",todayKey);
+  }
+}
+
+/* ===========================
+   ✅ ファルコン時間割（6R以降ズレ対応）
+=========================== */
+const ROUND_SLOTS = [
+  { r:1, start:"09:00", end:"09:50" },
+  { r:2, start:"10:00", end:"10:50" },
+  { r:3, start:"11:00", end:"11:50" },
+  { r:4, start:"12:00", end:"12:50" },
+  { r:5, start:"13:00", end:"13:50" },
+  { r:6, start:"14:10", end:"15:00" },
+  { r:7, start:"15:10", end:"16:00" },
+  { r:8, start:"16:10", end:"17:00" },
+  { r:9, start:"17:10", end:"18:00" },
+];
+
+function hmToMin_(hm){
+  const [h,m]=hm.split(":").map(n=>parseInt(n,10));
+  return h*60+m;
+}
+function getCurrentRound_(now){
+  const min = now.getHours()*60 + now.getMinutes();
+  for(const s of ROUND_SLOTS){
+    const a = hmToMin_(s.start);
+    const b = hmToMin_(s.end);
+    if(min >= a && min <= b) return s.r;
+  }
+  return null;
+}
+function startHeaderClock_(){
+  const el = document.getElementById("now-info");
+  const tick = ()=>{
+    const now = new Date();
+    const hh = String(now.getHours()).padStart(2,"0");
+    const mm = String(now.getMinutes()).padStart(2,"0");
+    const r = getCurrentRound_(now);
+    el.textContent = `${hh}:${mm}　${(r==null ? "休憩" : (r+"R"))}`;
+  };
+  tick();
+  setInterval(tick, 10000);
+}
+
+/* ===========================
+   モーダル
+=========================== */
+function openConfirm(action){
+  currentAction=action;
+  document.getElementById("modal-message").textContent=`${action}してよろしいですか？`;
+  document.getElementById("modal").style.display="flex";
+  document.body.style.overflow='hidden';
+}
+function closeModal(){
+  document.getElementById("modal").style.display="none";
+  document.body.style.overflow='';
+}
+function validateAndConfirm(){
+  const ids=["username","call","out","ap","miko","kad","sonota","report"];
+  for(const id of ids){
+    const el=document.getElementById(id);
+    if(!el.value){
+      alert("すべての項目を入力してください。");
+      el.focus();
+      return;
+    }
+  }
+  openConfirm("日報送信");
+}
+function confirmAction(){
+  document.getElementById("modal").style.display="none";
+  document.body.style.overflow='';
+  if(currentAction==="日報送信") startSend();
+  if(currentAction==="リセット") resetInputs(true);
+}
+
+/* ===========================
+   🎉 AP演出（軽量紙吹雪）4.2秒
+=========================== */
+function showAPCelebration_(){
+  const layer = document.getElementById("ap-celebration");
+  if(!layer) return;
+
+  layer.classList.add("show");
+
+  const count = 42; // 安定・軽量ライン
+  const vw = Math.max(document.documentElement.clientWidth, window.innerWidth || 0);
+
+  for(let i=0;i<count;i++){
+    const el = document.createElement("div");
+    el.className = "confetti";
+
+    const x = Math.random() * vw;
+    const dx = (Math.random() * 160 - 80) + "px";
+
+    el.style.left = x + "px";
+    el.style.setProperty("--x", "0px");
+    el.style.setProperty("--dx", dx);
+
+    const colors = ["#00A2B8","#0078A6","#F5B041","#F39C12","#60a5fa","#22c55e"];
+    el.style.background = colors[(Math.random()*colors.length)|0];
+
+    const w = 8 + Math.random()*8;
+    const h = 10 + Math.random()*10;
+    el.style.width = w + "px";
+    el.style.height = h + "px";
+
+    // 4.2秒表示に合わせて落下も自然に
+    el.style.animationDuration = (2.6 + Math.random()*1.2) + "s";
+
+    layer.appendChild(el);
+    setTimeout(()=> el.remove(), 4300);
+  }
+
+  setTimeout(()=>{
+    layer.classList.remove("show");
+    layer.querySelectorAll(".confetti").forEach(n=>n.remove());
+  }, 4200);
+}
+
+/* ===========================
+   送信
+=========================== */
+function startSend(){
+  const aiDiv=document.getElementById("ai-analyze");
+  aiDiv.style.display="block";
+  aiDiv.scrollIntoView({behavior:"smooth",block:"center"});
+
+  const payload={
+    name:username.value,
+    call:call.value,
+    out:out.value,
+    ap:ap.value,
+    miko:miko.value,
+    kad:kad.value,
+    sonota:sonota.value,
+    report:report.value
+  };
+
+  google.script.run
+    .withSuccessHandler(()=>{
+      aiDiv.innerHTML = (Number(payload.ap)>=1)
+        ? "<p>🎉 AP取得おめでとうございます！本日もお疲れさまでした。</p>"
+        : "<p>本日もお疲れさまでした。</p>";
+
+      if(Number(payload.ap) >= 1) showAPCelebration_();
+
+      // 累計が開いていれば更新
+      if(document.getElementById("dashboard").style.display !== "none"){
+        loadDashboard_();
+      }
+      // 履歴が開いていれば更新
+      if(document.getElementById("history").style.display !== "none"){
+        loadHistory_();
+      }
+    })
+    .withFailureHandler(err=>{
+      aiDiv.innerHTML=`<p>送信でエラーが発生しました：${String(err)}</p>`;
+    })
+    .appendDailyReport(payload);
+}
+
+function resetInputs(showAlert=true){
+  ["call","out","ap","miko","kad","sonota","report"].forEach(id=>document.getElementById(id).value="");
+  document.getElementById("ai-analyze").style.display="none";
+  if(showAlert) alert("入力内容をリセットしました。");
+}
+
+/* ===========================
+   ✅ ダッシュボード（確実表示）
+   - getMonthlySummary(name) だけ使う
+   - Charts準備完了を待ってから draw
+   ✅ 円グラフは「AP数 / 成約数」
+=========================== */
+function loadDashboard_(){
+  const name=document.getElementById("username").value;
+  if(!name) return;
+
+  const msg = document.getElementById("chart-msg");
+  msg.textContent = "グラフ準備中…";
+
+  google.script.run
+    .withSuccessHandler(async data=>{
+      document.getElementById("dash-body").innerHTML=`
+        <tr>
+          <td>${data.workDays}</td><td>${data.callSum}</td><td>${data.outSum}</td>
+          <td>${data.apSum}</td><td>${data.mikoSum}</td><td>${data.kadSum}</td>
+          <td>${data.sonotaSum}</td><td>${data.totalR}</td><td>${data.dealCount}</td>
+        </tr>`;
+
+      await __chartsReady;
+
+      const ap = Number(data.apSum || 0);
+      const deal = Number(data.dealCount || 0);
+
+      if(ap === 0 && deal === 0){
+        document.getElementById("pie-chart").innerHTML =
+          '<div class="tip" style="text-align:center;padding:18px;">今月のAP/成約データがまだありません</div>';
+        msg.textContent = "";
+        return;
+      }
+
+      const pieData = google.visualization.arrayToDataTable([
+        ['項目','件数'],
+        ['AP', ap],
+        ['成約', deal]
+      ]);
+
+      const pieOptions = {
+        title: '成果（AP / 成約）',
+        legend: { position: 'bottom' },
+        chartArea: { width: '90%', height: '70%' },
+        pieHole: 0.35
+      };
+
+      const el = document.getElementById('pie-chart');
+      new google.visualization.PieChart(el).draw(pieData, pieOptions);
+
+      msg.textContent = "";
+    })
+    .withFailureHandler(err=>{
+      msg.textContent = "グラフ取得に失敗：" + String(err);
+    })
+    .getMonthlySummary(name);
+}
+
+function toggleDashboard(){
+  const dash=document.getElementById("dashboard");
+  const show=(dash.style.display==="none");
+  dash.style.display=show?"block":"none";
+  if(show) loadDashboard_();
+}
+
+/* ===========================
+   ✅ 履歴（追加）
+   - 最新20件
+   - 業務報告も表示
+   - 参照専用（既存機能は壊さない）
+=========================== */
+function toggleHistory(){
+  const box = document.getElementById("history");
+  const show = (box.style.display === "none");
+  box.style.display = show ? "block" : "none";
+  if(show) loadHistory_();
+}
+
+function escapeHtml_(s){
+  return String(s || '')
+    .replaceAll('&','&amp;')
+    .replaceAll('<','&lt;')
+    .replaceAll('>','&gt;')
+    .replaceAll('"','&quot;')
+    .replaceAll("'","&#39;");
+}
+
+function loadHistory_(){
+  const name = document.getElementById("username").value;
+  if(!name) return;
+
+  const body = document.getElementById("history-body");
+  body.innerHTML = "読み込み中…";
+
+  google.script.run
+    .withSuccessHandler(list=>{
+      if(!list || !list.length){
+        body.innerHTML = "<div class='tip'>履歴がありません</div>";
+        return;
+      }
+
+      body.innerHTML = list.map(r=>{
+        const date = escapeHtml_(r.date);
+        const report = escapeHtml_(r.report);
+        return `
+          <div class="history-card">
+            <div class="date">${date}</div>
+            <div class="nums">
+              コール:${r.call} / アウト:${r.out} / AP:${r.ap} / 見込み:${r.miko}<br>
+              架電R:${r.kad} / その他R:${r.sonota}
+            </div>
+            <div class="report">${report || ""}</div>
+          </div>
+        `;
+      }).join("");
+    })
+    .withFailureHandler(err=>{
+      body.innerHTML = "<div class='tip'>履歴取得に失敗：" + escapeHtml_(err) + "</div>";
+    })
+    .getMyReportHistory(name, 20);
+}
+
+/* ===========================
+   起動
+=========================== */
+(function init(){
+  setToday();
+  loadUserFromURL();
+  startHeaderClock_();
+})();
+</script>
+</body>
+</html>
